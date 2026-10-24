@@ -1,3 +1,8 @@
 
 models/localized_kan.py
 models/ridge_bank.py
+.claude/
+.venv/
+__pycache__/
+risultati/
+venv/
