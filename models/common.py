@@ -93,6 +93,33 @@ def bn(num_features):
     return nn.BatchNorm2d(num_features)
 
 
+# Operatore usato per le convoluzioni con kernel_size > 1: 'dense' (nn.Conv2d
+# originale), 'free_bank' (FreeBankConv2d) o 'ridge_bank' (RidgeBankConv2d).
+# Va impostato con imposta_operatore() PRIMA di costruire la rete.
+OPERATORI = ('dense', 'free_bank', 'ridge_bank')
+OPERATORE = 'dense'
+W0 = 3.0
+
+
+def imposta_operatore(nome, w0=3.0):
+    global OPERATORE, W0
+    assert nome in OPERATORI, f"operatore sconosciuto: {nome}"
+    OPERATORE = nome
+    W0 = w0
+
+
+def _crea_convolver(in_f, out_f, kernel_size, stride, to_pad, bias):
+    # Le 1x1 restano sempre nn.Conv2d: una banca su un filtro di un pixel non ha senso
+    if OPERATORE == 'dense' or kernel_size == 1:
+        return nn.Conv2d(in_f, out_f, kernel_size, stride, padding=to_pad, bias=bias)
+
+    # Import locale: con 'dense' Auto-AD funziona anche senza i file privati
+    from .ridge_bank import FreeBankConv2d, RidgeBankConv2d
+    if OPERATORE == 'free_bank':
+        return FreeBankConv2d(in_f, out_f, kernel_size, stride=stride, padding=to_pad, bias=bias)
+    return RidgeBankConv2d(in_f, out_f, kernel_size, stride=stride, padding=to_pad, bias=bias, w0=W0)
+
+
 def conv(in_f, out_f, kernel_size, stride=1, bias=True, pad='zero', downsample_mode='stride'):
     downsampler = None
     if stride != 1 and downsample_mode != 'stride':
@@ -114,7 +141,7 @@ def conv(in_f, out_f, kernel_size, stride=1, bias=True, pad='zero', downsample_m
         padder = nn.ReflectionPad2d(to_pad)
         to_pad = 0
   
-    convolver = nn.Conv2d(in_f, out_f, kernel_size, stride, padding=to_pad, bias=bias)
+    convolver = _crea_convolver(in_f, out_f, kernel_size, stride, to_pad, bias)
 
 
     layers = filter(lambda x: x is not None, [padder, convolver, downsampler])
