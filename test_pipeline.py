@@ -182,20 +182,25 @@ def test_conteggio_parametri():
 # --------------------------------------------------------------------------
 # 6. Determinismo
 # --------------------------------------------------------------------------
-def test_determinismo(device, iterazioni):
+def test_determinismo(device, iterazioni, curve_ogni=50):
     cubo, gt = carica_scena()
-    for operatore in ('dense', 'ridge_bank'):
-        risultati = []
-        for _ in range(2):
-            common.imposta_operatore(operatore)
-            metriche, mappa = auto_ad_valuta_scena(cubo, gt, num_iter=iterazioni, seed=1,
-                                                   device=device)
-            risultati.append((metriche, mappa))
-        (m1, r1), (m2, r2) = risultati
+    for operatore in common.OPERATORI:
+        risultati = [auto_ad_valuta_scena(cubo, gt, num_iter=iterazioni, seed=1, device=device,
+                                          operatore=operatore, curve_ogni=curve_ogni)
+                     for _ in range(2)]
+        (m1, r1, c1), (m2, r2, c2) = risultati
         diff = np.abs(r1 - r2).max()
         print(f'  {operatore:10s} AUC {m1["auc"]:.4f} vs {m2["auc"]:.4f}, iterazioni '
               f'{m1["iterazioni_effettive"]} vs {m2["iterazioni_effettive"]}, '
               f'differenza massima mappa residui {diff:.2e}')
+        # Curve: differenza massima su tutti i punti registrati, per ciascuna grandezza
+        if len(c1) != len(c2):
+            print(f'  {"":10s} curve di lunghezza diversa: {len(c1)} vs {len(c2)} punti')
+            continue
+        diff_curve = {campo: max(abs(p1[campo] - p2[campo]) for p1, p2 in zip(c1, c2))
+                      for campo in ('auc', 'errore_sfondo', 'errore_aerei')}
+        print(f'  {"":10s} curve ({len(c1)} punti, ogni {curve_ogni} iter), differenza massima: '
+              + ', '.join(f'{campo} {d:.2e}' for campo, d in diff_curve.items()))
     common.imposta_operatore('dense')
     # Sulla GPU piccole differenze sono normali: il test registra, non boccia
     return True
@@ -209,9 +214,8 @@ def test_run_prova(device, iterazioni):
     os.makedirs(CARTELLA_USCITA, exist_ok=True)
     righe = []
     for operatore in common.OPERATORI:
-        common.imposta_operatore(operatore)
-        metriche, mappa = auto_ad_valuta_scena(cubo, gt, num_iter=iterazioni, seed=1,
-                                               device=device)
+        metriche, mappa, _ = auto_ad_valuta_scena(cubo, gt, num_iter=iterazioni, seed=1,
+                                                  device=device, operatore=operatore)
         np.save(os.path.join(CARTELLA_USCITA, f'residui_{operatore}.npy'), mappa)
         righe.append({'operatore': operatore, **metriche})
         print(f'  {operatore:10s} {metriche}')

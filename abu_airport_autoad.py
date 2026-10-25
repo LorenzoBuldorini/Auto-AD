@@ -9,6 +9,7 @@ import torch
 import torch.optim
 from sklearn.metrics import roc_auc_score
 
+from models import common
 from models.skip import skip
 from utils.inpainting_utils import get_noise, get_params
 
@@ -18,11 +19,16 @@ torch.backends.cudnn.deterministic = True
 
 def auto_ad_valuta_scena(cubo, gt, canali=64, layers=5, num_iter=1001,
                           thres=0.000015, lr=0.01, seed=42, verbose_ogni=0,
-                          device='cuda'):
+                          device='cuda', operatore='dense', kernel=3, w0=3.0,
+                          curve_ogni=0):
     """
     cubo: array (righe, colonne, bande)
     gt:   array (righe, colonne), binario
-    Ritorna: metriche (dict), mappa_residuo (righe, colonne)
+    operatore: 'dense' | 'free_bank' | 'ridge_bank' (vedi models/common.py)
+    kernel: usato sia per filter_size_up sia per filter_size_down
+    curve_ogni: se > 0, ogni curve_ogni iterazioni registra AUC, errore medio
+        sfondo ed errore medio aerei, calcolati dallo stesso `out` del training
+    Ritorna: metriche (dict), mappa_residuo (righe, colonne), curve (lista di dict)
     """
     dtype = torch.cuda.FloatTensor if device == 'cuda' else torch.FloatTensor
     torch.manual_seed(seed)
@@ -33,16 +39,33 @@ def auto_ad_valuta_scena(cubo, gt, canali=64, layers=5, num_iter=1001,
     img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8)
     img_var = torch.from_numpy(img_np).type(dtype)[None, :]
 
+    common.imposta_operatore(operatore, w0)
     net = skip(bands, bands,
                num_channels_down=[canali] * layers,
                num_channels_up=[canali] * layers,
                num_channels_skip=[canali] * layers,
-               filter_size_up=3, filter_size_down=3,
+               filter_size_up=kernel, filter_size_down=kernel,
                upsample_mode='nearest', filter_skip_size=1,
                need_sigmoid=True, need_bias=True, pad='reflection',
                act_fun='LeakyReLU').type(dtype)
 
     n_parametri = sum(np.prod(list(p.size())) for p in net.parameters())
+
+    # Le banche consumano l'RNG in modo diverso da nn.Conv2d: si ri-fissa il seed
+    # così tutti i bracci hanno lo stesso rumore d'ingresso e di training
+    torch.manual_seed(seed)
+
+    gt_aerei = gt.flatten() > 0
+    curve = []
+
+    def registra_curva(iter_num, residuo):
+        r = residuo.cpu().numpy().flatten()
+        curve.append({
+            'iterazione': iter_num,
+            'auc': float(roc_auc_score(gt_aerei, r)),
+            'errore_sfondo': float(r[~gt_aerei].mean()),
+            'errore_aerei': float(r[gt_aerei].mean()),
+        })
 
     net_input = get_noise(bands, '2D', img_np.shape[1:]).type(dtype)
     net_input_saved = net_input.detach().clone()
@@ -56,6 +79,9 @@ def auto_ad_valuta_scena(cubo, gt, canali=64, layers=5, num_iter=1001,
         net_in = net_input_saved + (noise.normal_() * 0.1)
         out = net(net_in)
         mask_c, res_c = mask_varr.detach().clone(), residual_varr.detach().clone()
+
+        if curve_ogni and iter_num % curve_ogni == 0:
+            registra_curva(iter_num, ((out.detach()[0, :] - img_var[0, :]) ** 2).sum(0))
 
         if iter_num % 100 == 0 and iter_num != 0:
             temp = (out.detach()[0, :] - img_var[0, :]) ** 2
@@ -97,4 +123,4 @@ def auto_ad_valuta_scena(cubo, gt, canali=64, layers=5, num_iter=1001,
         'tempo_secondi': round(time.time() - inizio, 1),
         'n_parametri': int(n_parametri),
         'auc': round(float(auc), 4),
-    }, mappa_residuo
+    }, mappa_residuo, curve
